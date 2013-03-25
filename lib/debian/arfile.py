@@ -330,6 +330,7 @@ class ArMember(object):
     def close(self):
         if self.__fp is not None:
             self.__fp.close()
+            self.__fp = None
    
     def next(self):
         return self.readline()
