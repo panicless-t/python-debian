@@ -179,6 +179,7 @@ class ArMember(object):
 
     def __init__(self):
         self.__name = None      # member name (i.e. filename) in the archive
+        self.__endslash = False # member name had trailing slash
         self.__mtime = None     # last modification time
         self.__owner = None     # owner user
         self.__group = None     # owner group
@@ -227,6 +228,7 @@ class ArMember(object):
         # XXX struct.unpack can be used as well here
         f = ArMember()
         f.__name = buf[0:16].split(b"/")[0].strip()
+        f.__endslash = buf[0:16].strip().endswith(b"/")
         if sys.version >= '3':
             f.__name = f.__name.decode(encoding, errors)
         f.__mtime = int(buf[16:28])
