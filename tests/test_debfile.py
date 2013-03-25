@@ -110,6 +110,19 @@ class TestArFile(unittest.TestCase):
         for m in self.a.getmembers():
             m.read()
 
+    def test_extract(self):
+        """ test extraction """
+        tmpf = tempfile.NamedTemporaryFile()
+        self.a.extract('test_debfile.py', tmpf.name)
+        self.assertEqual(open(tmpf.name, 'rb').read(), open(__file__, 'rb').read())
+        tmpf.close()
+
+        tmpd = tempfile.mkdtemp()
+        self.a.extract('test_debfile.py', tmpd)
+        tmpf = os.path.join(tmpd, 'test_debfile.py')
+        self.assertEqual(open(tmpf, 'rb').read(), open(__file__, 'rb').read())
+        os.unlink(tmpf)
+
 class TestDebFile(unittest.TestCase):
 
     def setUp(self):

@@ -18,6 +18,7 @@
 from __future__ import print_function
 
 import sys
+import os
 
 GLOBAL_HEADER = b"!<arch>\n"
 GLOBAL_HEADER_LENGTH = len(GLOBAL_HEADER)
@@ -119,15 +120,25 @@ class ArFile(object):
 
         return [f.name for f in self.__members]
 
-    def extractall():
-        """ Not (yet) implemented. """
+    def extractall(self, path=None):
+        """ Extracts all archive members to specified directory or
+        current working directory if path is None. """
+        for m in self.getmembers():
+            self.extract(m, path)
 
-        raise NotImplementedError  # TODO
-
-    def extract(self, member, path):
-        """ Not (yet) implemented. """
-
-        raise NotImplementedError  # TODO
+    def extract(self, member, path=None):
+        """ Extracts an archive member to specified path or current working
+        directory if path is None. If path is directory, extract into it, else
+        use specified name as file name."""
+        m = self.extractfile(member)
+        if path is None:
+            path = '.'
+        if os.path.isdir(path):
+            path = os.path.join(path, m.name)
+        fd = open(path, 'wb')
+        m.seek(0)
+        fd.write(m.read())
+        fd.close()
 
     def extractfile(self, member):
         """ Return a file object corresponding to the requested member. A member
