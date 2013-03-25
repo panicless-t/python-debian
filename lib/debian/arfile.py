@@ -39,7 +39,7 @@ class ArFile(object):
         - members       same as getmembers()
     """
 
-    def __init__(self, filename=None, mode='r', fileobj=None,
+    def __init__(self, filename=None, mode='rb', fileobj=None,
                  encoding=None, errors=None):
         """ Build an ar file representation starting from either a filename or
         an existing file object. The only supported mode is 'r'.
@@ -63,14 +63,14 @@ class ArFile(object):
             else:
                 errors = 'strict'
         self.__errors = errors
-        
-        if mode == "r":
+        self.__mode = mode
+        if self.__mode == "rb":
             self.__index_archive()
         pass    # TODO write support
 
     def __index_archive(self):
         if self.__fname:
-            fp = open(self.__fname, "rb")
+            fp = open(self.__fname, self.__mode)
         elif self.__fileobj:
             fp = self.__fileobj
         else:
@@ -82,7 +82,8 @@ class ArFile(object):
         while True:
             newmember = ArMember.from_file(fp, self.__fname,
                                            encoding=self.__encoding,
-                                           errors=self.__errors)
+                                           errors=self.__errors,
+                                           mode=self.__mode)
             if not newmember:
                 break
             self.__members.append(newmember)
@@ -200,8 +201,9 @@ class ArMember(object):
         self.__fp = None        # file pointer 
         self.__offset = None    # start-of-data offset
         self.__end = None       # end-of-data offset
+        self.__mode = None      # file open mode
 
-    def from_file(fp, fname, encoding=None, errors=None):
+    def from_file(fp, fname, encoding=None, errors=None, mode='rb'):
         """fp is an open File object positioned on a valid file header inside
         an ar archive. Return a new ArMember on success, None otherwise. """
 
@@ -251,6 +253,7 @@ class ArMember(object):
         f.__fname = fname
         f.__offset = fp.tell() # start-of-data
         f.__end = f.__offset + f.__size
+        f.__mode = mode
 
         return f
 
@@ -261,7 +264,7 @@ class ArMember(object):
     # XXX this is not a sequence like file objects
     def _ensure_open(self):
         if self.__fp is None:
-            self.__fp = open(self.__fname, "rb")
+            self.__fp = open(self.__fname, self.__mode)
             self.__fp.seek(self.__offset)
 
     def read(self, size=0):
