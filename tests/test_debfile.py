@@ -103,6 +103,13 @@ class TestArFile(unittest.TestCase):
             m.close()
             f.close()
 
+    def test_armember_reopening(self):
+        """ test for reopening a closed member """
+        for m in self.a.getmembers():
+            m.close()
+        for m in self.a.getmembers():
+            m.read()
+
 class TestDebFile(unittest.TestCase):
 
     def setUp(self):
