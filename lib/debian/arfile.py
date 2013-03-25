@@ -246,10 +246,13 @@ class ArMember(object):
     # file interface
 
     # XXX this is not a sequence like file objects
-    def read(self, size=0):
+    def _ensure_open(self):
         if self.__fp is None:
             self.__fp = open(self.__fname, "rb")
             self.__fp.seek(self.__offset)
+
+    def read(self, size=0):
+        self._ensure_open()
 
         cur = self.__fp.tell()
 
@@ -262,9 +265,7 @@ class ArMember(object):
         return self.__fp.read(self.__end - cur)
 
     def readline(self, size=None):
-        if self.__fp is None:
-            self.__fp = open(self.__fname, "rb")
-            self.__fp.seek(self.__offset)
+        self._ensure_open()
 
         if size is not None: 
             buf = self.__fp.readline(size)
@@ -280,9 +281,7 @@ class ArMember(object):
             return buf
 
     def readlines(self, sizehint=0):
-        if self.__fp is None:
-            self.__fp = open(self.__fname, "rb")
-            self.__fp.seek(self.__offset)
+        self._ensure_open()
         
         buf = None
         lines = []
@@ -295,9 +294,7 @@ class ArMember(object):
         return lines
 
     def seek(self, offset, whence=0):
-        if self.__fp is None:
-            self.__fp = open(self.__fname, "rb")
-            self.__fp.seek(self.__offset)
+        self._ensure_open()
 
         if self.__fp.tell() < self.__offset:
             self.__fp.seek(self.__offset)
@@ -313,9 +310,7 @@ class ArMember(object):
             self.__fp.seek(self.__end + offset, 0)
 
     def tell(self):
-        if self.__fp is None:
-            self.__fp = open(self.__fname, "rb")
-            self.__fp.seek(self.__offset)
+        self._ensure_open()
 
         cur = self.__fp.tell()
         
