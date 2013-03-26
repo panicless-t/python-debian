@@ -39,7 +39,7 @@ class ArFile(object):
         - members       same as getmembers()
     """
 
-    def __init__(self, filename=None, mode='rb', fileobj=None,
+    def __init__(self, filename=None, mode='r', fileobj=None,
                  encoding=None, errors=None):
         """ Build an ar file representation starting from either a filename or
         an existing file object. The only supported mode is 'r'.
@@ -63,14 +63,17 @@ class ArFile(object):
             else:
                 errors = 'strict'
         self.__errors = errors
+        self.__modemap = {'r': 'rb', 'a': 'r+b', 'w': 'wb'}
         self.__mode = mode
-        if self.__mode == "rb":
+        if self.__mode not in 'raw':
+            raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
+        if self.__mode in 'ra':
             self.__index_archive()
         pass    # TODO write support
 
     def __index_archive(self):
         if self.__fname:
-            fp = open(self.__fname, self.__mode)
+            fp = open(self.__fname, self.__modemap[self.__mode])
         elif self.__fileobj:
             fp = self.__fileobj
         else:
@@ -87,6 +90,8 @@ class ArFile(object):
             if not newmember:
                 break
             self.__members.append(newmember)
+            if self.__members[0].endslash != newmember.endslash:
+                raise ValueError("BSD/GNU filename field format mixup.")
             self.__members_dict[newmember.name] = newmember
             if newmember.size % 2 == 0: # even, no padding
                 fp.seek(newmember.size, 1) # skip to next header
@@ -102,7 +107,6 @@ class ArFile(object):
 
         Note that in case of name collisions the only way to retrieve all
         members matching a given name is to use getmembers. """
-
         return self.__members_dict[name]
 
     def getmembers(self):
@@ -161,6 +165,19 @@ class ArFile(object):
                 return m
         return None
 
+    def append(self, filename):
+        if self.__mode == 'r':
+            raise IOError("File not open for writing")
+        if self.__fname:
+            fp = open(self.__fname, self.__modemap[self.__mode])
+        else:
+            fp = self.__fileobj
+        member = ArMember.from_filename(fp, filename, endslash=self.getmembers()[0].endslash)
+        if self.__fname:
+            fp.close()
+        self.__members.append(member)
+        self.__members_dict[member.name] = member
+
     # container emulation
 
     def __iter__(self):
@@ -172,7 +189,6 @@ class ArFile(object):
         """ Same as .getmember(name). """
 
         return self.getmember(name)
-
 
 class ArMember(object):
     """ Member of an ar archive.
@@ -191,7 +207,7 @@ class ArMember(object):
 
     def __init__(self):
         self.__name = None      # member name (i.e. filename) in the archive
-        self.__endslash = False # member name had trailing slash
+        self.__endslash = 0     # member name had trailing slash
         self.__mtime = None     # last modification time
         self.__owner = None     # owner user
         self.__group = None     # owner group
@@ -203,10 +219,35 @@ class ArMember(object):
         self.__end = None       # end-of-data offset
         self.__mode = None      # file open mode
 
+    def from_filename(fp, filename, encoding=None, errors=None, mode='rb', endslash=0):
+        """ """
+        f = ArMember()
+        st = os.stat(filename)
+
+        fd = open(filename, 'rb')
+        f.__name = fd.name
+        f.__endslash = endslash
+        f.__mtime = int(st.st_mtime)
+        f.__owner = int(st.st_uid)
+        f.__group = int(st.st_gid)
+        f.__fmode = '%o' % st.st_mode
+        f.__size = st.st_size
+        f.__fname = fp.name
+        
+        fp.seek(0, os.SEEK_END)
+        fp.write(f.getheader())
+        f.__offset = fp.tell()
+        fp.write(fd.read())
+        f.__end = fp.tell()
+        fp.write(f.getpadding())
+        fd.close()
+        return f
+    from_filename = staticmethod(from_filename)
+
     def from_file(fp, fname, encoding=None, errors=None, mode='rb'):
         """fp is an open File object positioned on a valid file header inside
         an ar archive. Return a new ArMember on success, None otherwise. """
-
+        # FIXME: Mode should probably not be in last position.
         buf = fp.read(FILE_HEADER_LENGTH)
 
         if not buf:
@@ -241,7 +282,7 @@ class ArMember(object):
         # XXX struct.unpack can be used as well here
         f = ArMember()
         f.__name = buf[0:16].rstrip().split(b"/")[0]
-        f.__endslash = buf[0:16].rstrip().endswith(b"/")
+        f.__endslash = int(buf[0:16].rstrip().endswith(b"/"))
         if sys.version >= '3':
             f.__name = f.__name.decode(encoding, errors)
         f.__mtime = int(buf[16:28])
@@ -266,6 +307,19 @@ class ArMember(object):
         if self.__fp is None:
             self.__fp = open(self.__fname, self.__mode)
             self.__fp.seek(self.__offset)
+
+    def getheader(self):
+        name = self.name
+        if self.endslash:
+            name += '/'
+        if len(name) > 16:
+            raise ValueError('Long file names are not supported')
+        return '{1: <16}{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self, name)
+
+    def getpadding(self):
+        if self.size % 2 == 1:
+            return '\n'
+        return ''
 
     def read(self, size=0):
         self._ensure_open()
@@ -361,6 +415,7 @@ class ArMember(object):
     fmode = property(lambda self: self.__fmode)
     size = property(lambda self: self.__size)
     fname = property(lambda self: self.__fname)
+    endslash = property(lambda self: self.__endslash)
 
 if __name__ == '__main__':
     # test

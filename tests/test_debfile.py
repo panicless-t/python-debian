@@ -34,6 +34,28 @@ sys.path.insert(0, '../lib/')
 from debian import arfile
 from debian import debfile
 
+class TestArFileWriting(unittest.TestCase):
+    def setUp(self):
+        os.system("ar r test.ar test_changelog test_deb822.py >/dev/null 2>&1") 
+        assert os.path.exists("test.ar")
+        with os.popen("ar t test.ar") as ar:
+            self.testmembers = [x.strip() for x in ar.readlines()]
+        self.a = arfile.ArFile("test.ar", mode='a')
+
+    def tearDown(self):
+        if os.path.exists('test.ar'):
+            os.unlink('test.ar')
+
+    def test_append(self):
+        self.a.append('test_debfile.py')
+
+        m = self.a.getmember('test_debfile.py')
+        self.assertEqual(m.name, 'test_debfile.py')
+        self.assertEqual(self.a.getmembers()[-1], m)
+        
+        self.a2 = arfile.ArFile('test.ar', mode='r')
+        m2 = self.a2.getmember('test_debfile.py')
+
 class TestArFile(unittest.TestCase):
 
     def setUp(self):
