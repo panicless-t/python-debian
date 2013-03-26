@@ -30,6 +30,228 @@ FILE_MAGIC = b"`\n"
 class ArError(Exception):
     pass
 
+
+class ArMember(object):
+    """ Member of an ar archive.
+
+    Implements most of a file object interface: read, readline, next,
+    readlines, seek, tell, close.
+    
+    ArMember objects have the following (read-only) properties:
+        - name      member name in an ar archive
+        - mtime     modification time
+        - owner     owner user
+        - group     owner group
+        - fmode     file permissions
+        - size      size in bytes
+        - fname     file name"""
+
+    def __init__(self, name=''):
+        self.name = name      # member name (i.e. filename) in the archive
+        self._endslash = 0    # member name had trailing slash
+        self.mtime = 0        # last modification time
+        self.owner = 0        # owner user
+        self.group = 0        # owner group
+        self.fmode = 0644     # permissions
+        self.size = 0         # member size in bytes
+        self.fname = None     # file name associated with this member
+        self._fp = None       # file pointer 
+        self._offset = 0      # start-of-data offset
+        self._end = 0         # end-of-data offset
+        self.mode = None      # file open mode
+
+    @classmethod
+    def from_buf(cls, buf, fname, offset, encoding=None, errors=None, mode='rb'):
+        """ Construct a ArInfo object from a 60-byte header"""
+        if not buf:
+            return None
+
+        # sanity checks
+        if len(buf) < FILE_HEADER_LENGTH:
+            raise IOError("Incorrect header length")
+
+        if buf[58:60] != FILE_MAGIC:
+            raise IOError("Incorrect file magic")
+
+        if sys.version >= '3':
+            if encoding is None:
+                encoding = sys.getfilesystemencoding()
+            if errors is None:
+                if sys.version >= '3.2':
+                    errors = 'surrogateescape'
+                else:
+                    errors = 'strict'
+
+        # http://en.wikipedia.org/wiki/Ar_(Unix)    
+        #from   to     Name                      Format
+        #0      15     File name                 ASCII
+        #16     27     File modification date    Decimal
+        #28     33     Owner ID                  Decimal
+        #34     39     Group ID                  Decimal
+        #40     47     File mode                 Octal
+        #48     57     File size in bytes        Decimal
+        #58     59     File magic                \140\012
+
+        # XXX struct.unpack can be used as well here
+        obj = cls()
+        obj.name = buf[0:16].rstrip().split(b"/")[0]
+        obj._endslash = int(buf[0:16].rstrip().endswith(b"/"))
+        if sys.version >= '3':
+            obj.name = obj.name.decode(encoding, errors)
+        obj.mtime = int(buf[16:28])
+        obj.owner = int(buf[28:34])
+        obj.group = int(buf[34:40])
+        obj.fmode = buf[40:48]  # XXX octal value
+        obj.size  = int(buf[48:58])
+
+        obj.fname = fname
+        obj._offset = offset # start-of-data
+        obj._end  = obj._offset + obj.size
+        obj.mode  = mode
+        return obj
+
+    @classmethod
+    def from_filename(cls, fp, filename, encoding=None, errors=None, mode='r+b', endslash=0):
+        """ Create a ArMember from filename, to be able to include it in archive"""
+        f = cls()
+        st = os.stat(filename)
+
+        fd = open(filename, 'rb')
+        f.name = fd.name
+        f._endslash = endslash
+        f.mtime = int(st.st_mtime)
+        f.owner = int(st.st_uid)
+        f.group = int(st.st_gid)
+        f.fmode = '%o' % st.st_mode
+        f.size = st.st_size
+        f.fname = fp.name
+        
+        fp.seek(0, os.SEEK_END)
+        fp.write(f.getheader())
+        f._offset = fp.tell()
+        fp.write(fd.read())
+        f._end = fp.tell()
+        fp.write(f.getpadding())
+        fd.close()
+        return f
+
+    @classmethod
+    def from_arfile(cls, fp, fname, encoding=None, errors=None, mode='rb'):
+        """fp is an open File object positioned on a valid file header inside
+        an ar archive. Return a new ArMember on success, None otherwise. """
+        # FIXME: Mode should probably not be in last position.
+        buf = fp.read(FILE_HEADER_LENGTH)
+        return cls.from_buf(buf, fname, encoding=encoding, errors=errors, mode=mode, offset=fp.tell())
+
+    # file interface
+
+    # XXX this is not a sequence like file objects
+    def _ensure_open(self):
+        if self._fp is None:
+            self._fp = open(self.fname, self.mode)
+            self._fp.seek(self._offset)
+
+    def getheader(self):
+        name = self.name
+        if self._endslash:
+            name += '/'
+        if len(name) > 16:
+            raise ValueError('Long file names are not supported')
+        return '{1: <16}{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self, name)
+
+    def getpadding(self):
+        if self.size % 2 == 1:
+            return '\n'
+        return ''
+
+    def read(self, size=0):
+        self._ensure_open()
+
+        cur = self._fp.tell()
+
+        if size > 0 and size <= self._end - cur: # there's room
+            return self._fp.read(size)
+
+        if cur >= self._end or cur < self._offset:
+            return b''
+
+        return self._fp.read(self._end - cur)
+
+    def readline(self, size=None):
+        self._ensure_open()
+
+        if size is not None: 
+            buf = self._fp.readline(size)
+            if self._fp.tell() > self._end:
+                return b''
+
+            return buf
+
+        buf = self._fp.readline()
+        if self._fp.tell() > self._end:
+            return b''
+        else:
+            return buf
+
+    def readlines(self, sizehint=0):
+        self._ensure_open()
+        
+        buf = None
+        lines = []
+        while True: 
+            buf = self.readline()
+            if not buf: 
+                break
+            lines.append(buf)
+
+        return lines
+
+    def seek(self, offset, whence=0):
+        self._ensure_open()
+
+        if self._fp.tell() < self._offset:
+            self._fp.seek(self._offset)
+
+        if whence < 2 and offset + self._fp.tell() < self._offset:
+            raise IOError("Can't seek at %d" % offset)
+        
+        if whence == 1:
+            self._fp.seek(offset, 1)
+        elif whence == 0:
+            self._fp.seek(self._offset + offset, 0)
+        elif whence == 2:
+            self._fp.seek(self._end + offset, 0)
+
+    def tell(self):
+        self._ensure_open()
+
+        cur = self._fp.tell()
+        
+        if cur < self._offset:
+            return 0
+        else:
+            return cur - self._offset
+
+    def seekable(self):
+        return True
+
+    def close(self):
+        if self._fp is not None:
+            self._fp.close()
+            self._fp = None
+   
+    def next(self):
+        return self.readline()
+    
+    def __iter__(self):
+        def nextline():
+            line = self.readline()
+            if line:
+                yield line
+
+        return iter(nextline())
+
+
 class ArFile(object):
     """ Representation of an ar archive, see man 1 ar.
     
@@ -39,6 +261,8 @@ class ArFile(object):
     ArFile objects have the following (read-only) properties:
         - members       same as getmembers()
     """
+
+    armember = ArMember
 
     def __init__(self, filename=None, mode='r', fileobj=None,
                  encoding=None, errors=None):
@@ -84,7 +308,7 @@ class ArFile(object):
             raise ArError("Unable to find global header")
 
         while True:
-            newmember = ArMember.from_file(fp, self.name,
+            newmember = ArMember.from_arfile(fp, self.name,
                                            encoding=self.encoding,
                                            errors=self.errors,
                                            mode=self.mode)
@@ -207,225 +431,6 @@ class ArFile(object):
         """ Same as .getmember(name). """
 
         return self.getmember(name)
-
-class ArMember(object):
-    """ Member of an ar archive.
-
-    Implements most of a file object interface: read, readline, next,
-    readlines, seek, tell, close.
-    
-    ArMember objects have the following (read-only) properties:
-        - name      member name in an ar archive
-        - mtime     modification time
-        - owner     owner user
-        - group     owner group
-        - fmode     file permissions
-        - size      size in bytes
-        - fname     file name"""
-
-    def __init__(self):
-        self.name = None      # member name (i.e. filename) in the archive
-        self._endslash = 0     # member name had trailing slash
-        self.mtime = None     # last modification time
-        self.owner = None     # owner user
-        self.group = None     # owner group
-        self.fmode = None     # permissions
-        self.size = None      # member size in bytes
-        self.fname = None     # file name associated with this member
-        self._fp = None        # file pointer 
-        self._offset = None    # start-of-data offset
-        self._end = None       # end-of-data offset
-        self.mode = None      # file open mode
-
-    def from_filename(fp, filename, encoding=None, errors=None, mode='r+b', endslash=0):
-        """ Create a ArMember from filename, to be able to include it in archive"""
-        f = ArMember()
-        st = os.stat(filename)
-
-        fd = open(filename, 'rb')
-        f.name = fd.name
-        f._endslash = endslash
-        f.mtime = int(st.st_mtime)
-        f.owner = int(st.st_uid)
-        f.group = int(st.st_gid)
-        f.fmode = '%o' % st.st_mode
-        f.size = st.st_size
-        f.fname = fp.name
-        
-        
-        fp.seek(0, os.SEEK_END)
-        fp.write(f.getheader())
-        f._offset = fp.tell()
-        fp.write(fd.read())
-        f._end = fp.tell()
-        fp.write(f.getpadding())
-        fd.close()
-        return f
-    from_filename = staticmethod(from_filename)
-
-    def from_file(fp, fname, encoding=None, errors=None, mode='rb'):
-        """fp is an open File object positioned on a valid file header inside
-        an ar archive. Return a new ArMember on success, None otherwise. """
-        # FIXME: Mode should probably not be in last position.
-        buf = fp.read(FILE_HEADER_LENGTH)
-
-        if not buf:
-            return None
-
-        # sanity checks
-        if len(buf) < FILE_HEADER_LENGTH:
-            raise IOError("Incorrect header length")
-
-        if buf[58:60] != FILE_MAGIC:
-            raise IOError("Incorrect file magic")
-
-        if sys.version >= '3':
-            if encoding is None:
-                encoding = sys.getfilesystemencoding()
-            if errors is None:
-                if sys.version >= '3.2':
-                    errors = 'surrogateescape'
-                else:
-                    errors = 'strict'
-
-        # http://en.wikipedia.org/wiki/Ar_(Unix)    
-        #from   to     Name                      Format
-        #0      15     File name                 ASCII
-        #16     27     File modification date    Decimal
-        #28     33     Owner ID                  Decimal
-        #34     39     Group ID                  Decimal
-        #40     47     File mode                 Octal
-        #48     57     File size in bytes        Decimal
-        #58     59     File magic                \140\012
-
-        # XXX struct.unpack can be used as well here
-        f = ArMember()
-        f.name = buf[0:16].rstrip().split(b"/")[0]
-        f._endslash = int(buf[0:16].rstrip().endswith(b"/"))
-        if sys.version >= '3':
-            f.__name = f.__name.decode(encoding, errors)
-        f.mtime = int(buf[16:28])
-        f.owner = int(buf[28:34])
-        f.group = int(buf[34:40])
-        f.fmode  = buf[40:48]  # XXX octal value
-        f.size  = int(buf[48:58])
-
-        f.fname = fname
-        f._offset = fp.tell() # start-of-data
-        f._end = f._offset + f.size
-        f.mode = mode
-
-        return f
-
-    from_file = staticmethod(from_file)
-    
-    # file interface
-
-    # XXX this is not a sequence like file objects
-    def _ensure_open(self):
-        if self._fp is None:
-            self._fp = open(self.fname, self.mode)
-            self._fp.seek(self._offset)
-
-    def getheader(self):
-        name = self.name
-        if self._endslash:
-            name += '/'
-        if len(name) > 16:
-            raise ValueError('Long file names are not supported')
-        return '{1: <16}{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self, name)
-
-    def getpadding(self):
-        if self.size % 2 == 1:
-            return '\n'
-        return ''
-
-    def read(self, size=0):
-        self._ensure_open()
-
-        cur = self._fp.tell()
-
-        if size > 0 and size <= self._end - cur: # there's room
-            return self._fp.read(size)
-
-        if cur >= self._end or cur < self._offset:
-            return b''
-
-        return self._fp.read(self._end - cur)
-
-    def readline(self, size=None):
-        self._ensure_open()
-
-        if size is not None: 
-            buf = self._fp.readline(size)
-            if self._fp.tell() > self._end:
-                return b''
-
-            return buf
-
-        buf = self._fp.readline()
-        if self._fp.tell() > self._end:
-            return b''
-        else:
-            return buf
-
-    def readlines(self, sizehint=0):
-        self._ensure_open()
-        
-        buf = None
-        lines = []
-        while True: 
-            buf = self.readline()
-            if not buf: 
-                break
-            lines.append(buf)
-
-        return lines
-
-    def seek(self, offset, whence=0):
-        self._ensure_open()
-
-        if self._fp.tell() < self._offset:
-            self._fp.seek(self._offset)
-
-        if whence < 2 and offset + self._fp.tell() < self._offset:
-            raise IOError("Can't seek at %d" % offset)
-        
-        if whence == 1:
-            self._fp.seek(offset, 1)
-        elif whence == 0:
-            self._fp.seek(self._offset + offset, 0)
-        elif whence == 2:
-            self._fp.seek(self._end + offset, 0)
-
-    def tell(self):
-        self._ensure_open()
-
-        cur = self._fp.tell()
-        
-        if cur < self._offset:
-            return 0
-        else:
-            return cur - self._offset
-
-    def seekable(self):
-        return True
-
-    def close(self):
-        if self._fp is not None:
-            self._fp.close()
-            self._fp = None
-   
-    def next(self):
-        return self.readline()
-    
-    def __iter__(self):
-        def nextline():
-            line = self.readline()
-            if line:
-                yield line
-
-        return iter(nextline())
 
 if __name__ == '__main__':
     # test
