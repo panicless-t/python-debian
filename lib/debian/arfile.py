@@ -63,13 +63,16 @@ class ArFile(object):
             else:
                 errors = 'strict'
         self.__errors = errors
-        self.__modemap = {'r': 'rb', 'a': 'r+b', 'w': 'wb'}
+        self.__modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
         self.__mode = mode
         if self.__mode not in 'raw':
             raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
         if self.__mode in 'ra':
             self.__index_archive()
-        pass    # TODO write support
+        elif self.__mode == 'w':
+            self.__truncate_archive()
+
+    name = property(lambda self: self.__fname)
 
     def __index_archive(self):
         if self.__fname:
@@ -98,6 +101,18 @@ class ArFile(object):
             else:
                 fp.seek(newmember.size + 1 , 1) # skip to next header
         
+        if self.__fname:
+            fp.close()
+
+    def __truncate_archive(self):
+        if self.__fname:
+            fp = open(self.__fname, 'wb')
+        elif self.__fileobj:
+            fp = self.__fileobj
+        else:
+            raise IOError("Invalid parameters passed, need to specify either filename or fileobj")
+        fp.write(GLOBAL_HEADER)
+        fp.flush()
         if self.__fname:
             fp.close()
 
@@ -172,7 +187,11 @@ class ArFile(object):
             fp = open(self.__fname, self.__modemap[self.__mode])
         else:
             fp = self.__fileobj
-        member = ArMember.from_filename(fp, filename, endslash=self.getmembers()[0].endslash)
+        if self.getmembers() != []:
+            endslash = self.getmembers()[0].endslash
+        else:
+            endslash = 0
+        member = ArMember.from_filename(fp, filename, endslash=endslash)
         if self.__fname:
             fp.close()
         self.__members.append(member)
@@ -219,8 +238,8 @@ class ArMember(object):
         self.__end = None       # end-of-data offset
         self.__mode = None      # file open mode
 
-    def from_filename(fp, filename, encoding=None, errors=None, mode='rb', endslash=0):
-        """ """
+    def from_filename(fp, filename, encoding=None, errors=None, mode='r+b', endslash=0):
+        """ Create a ArMember from filename, to be able to include it in archive"""
         f = ArMember()
         st = os.stat(filename)
 
@@ -233,6 +252,7 @@ class ArMember(object):
         f.__fmode = '%o' % st.st_mode
         f.__size = st.st_size
         f.__fname = fp.name
+        
         
         fp.seek(0, os.SEEK_END)
         fp.write(f.getheader())
