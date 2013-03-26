@@ -1,5 +1,6 @@
 python-debian (0.1.22) UNRELEASED; urgency=low
 
+  * Implement ArFile.extract and ArFile.extractall. (Closes: #627062)
   * Acknowledge NMU.  (Thanks for your work, Colin!)
   * arfile.ArFile.extractfile: Return a matching member even if it is
     not the first one in the archive.  Thanks to Mika Eloranta for the
