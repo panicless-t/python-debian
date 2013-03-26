@@ -19,6 +19,7 @@ from __future__ import print_function
 
 import sys
 import os
+from tarfile import copyfileobj
 
 GLOBAL_HEADER = b"!<arch>\n"
 GLOBAL_HEADER_LENGTH = len(GLOBAL_HEADER)
@@ -152,7 +153,7 @@ class ArFile(object):
             path = os.path.join(path, m.name)
         fd = open(path, 'wb')
         m.seek(0)
-        fd.write(m.read())
+        copyfileobj(m, fd, m.size)
         fd.close()
 
     def extractfile(self, member):
