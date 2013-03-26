@@ -50,70 +50,67 @@ class ArFile(object):
         scheme is 'surrogateescape' (>= 3.2) or 'strict' (< 3.2).
         """
 
-        self.__members = [] 
-        self.__members_dict = {}
-        self.__fname = filename
-        self.__fileobj = fileobj
+        self.members = [] 
+        self.members_dict = {}
+        self.name = filename
+        self._fileobj = fileobj
         if encoding is None:
             encoding = sys.getfilesystemencoding()
-        self.__encoding = encoding
+        self.encoding = encoding
         if errors is None:
             if sys.version >= '3.2':
                 errors = 'surrogateescape'
             else:
                 errors = 'strict'
-        self.__errors = errors
-        self.__modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
-        self.__mode = mode
-        if self.__mode not in 'raw':
+        self.errors = errors
+        self._modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
+        self.mode = mode
+        if self.mode not in 'raw':
             raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
-        if self.__mode in 'ra':
-            self.__index_archive()
-        elif self.__mode == 'w':
-            self.__truncate_archive()
+        if self.mode in 'ra':
+            self._index_archive()
+        elif self.mode == 'w':
+            self._truncate_archive()
 
-    name = property(lambda self: self.__fname)
-
-    def __index_archive(self):
-        if self.__fname:
-            fp = open(self.__fname, self.__modemap[self.__mode])
-        elif self.__fileobj:
-            fp = self.__fileobj
+    def _index_archive(self):
+        if self.name:
+            fp = open(self.name, self._modemap[self.mode])
+        elif self._fileobj:
+            fp = self._fileobj
         else:
             raise ArError("Unable to open valid file")
-
         if fp.read(GLOBAL_HEADER_LENGTH) != GLOBAL_HEADER:
             raise ArError("Unable to find global header")
 
         while True:
-            newmember = ArMember.from_file(fp, self.__fname,
-                                           encoding=self.__encoding,
-                                           errors=self.__errors,
-                                           mode=self.__mode)
+            newmember = ArMember.from_file(fp, self.name,
+                                           encoding=self.encoding,
+                                           errors=self.errors,
+                                           mode=self.mode)
             if not newmember:
                 break
-            self.__members.append(newmember)
-            if self.__members[0].endslash != newmember.endslash:
+            self.members.append(newmember)
+            if self.members[0]._endslash != newmember._endslash:
                 raise ValueError("BSD/GNU filename field format mixup.")
-            self.__members_dict[newmember.name] = newmember
+            self.members_dict[newmember.name] = newmember
             if newmember.size % 2 == 0: # even, no padding
                 fp.seek(newmember.size, 1) # skip to next header
             else:
                 fp.seek(newmember.size + 1 , 1) # skip to next header
         
-        if self.__fname:
+        if self.name:
             fp.close()
 
-    def __truncate_archive(self):
-        if self.__fname:
-            fp = open(self.__fname, 'wb')
-        elif self.__fileobj:
-            fp = self.__fileobj
+    def _truncate_archive(self):
+        if self.name:
+            fp = open(self.name, 'wb')
+        elif self._fileobj:
+            fp = self._fileobj
         else:
             raise IOError("Invalid parameters passed, need to specify either filename or fileobj")
         fp.write(GLOBAL_HEADER)
         fp.flush()
-        if self.__fname:
+        if self.name:
             fp.close()
 
     def getmember(self, name):
@@ -122,7 +119,7 @@ class ArFile(object):
 
         Note that in case of name collisions the only way to retrieve all
         members matching a given name is to use getmembers. """
-        return self.__members_dict[name]
+        return self.members_dict[name]
 
     def getmembers(self):
         """ Return a list of all members contained in the archive.
@@ -131,14 +128,12 @@ class ArFile(object):
         duplicate members (i.e. members with the same name) if they are
         duplicate in the archive itself. """
 
-        return self.__members
-
-    members = property(getmembers)
+        return self.members
 
     def getnames(self):
         """ Return a list of all member names in the archive. """
 
-        return [f.name for f in self.__members]
+        return [f.name for f in self.members]
 
     def extractall(self, path=None):
         """ Extracts all archive members to specified directory or
@@ -173,29 +168,32 @@ class ArFile(object):
         # The former just seems confusing (and this implementation less
         # efficient than getmember's - probably historical), and I'm having a
         # hard time seeing the use-case for the latter.
-        for m in self.__members:
+        for m in self.members:
             if isinstance(member, ArMember) and m.name == member.name:
                 return m
             elif member == m.name:
                 return m
         return None
 
-    def append(self, filename):
-        if self.__mode == 'r':
+    def getarinfo(self):
+        pass # FIXME
+
+    def add(self, name):
+        if self.mode == 'r':
             raise IOError("File not open for writing")
-        if self.__fname:
-            fp = open(self.__fname, self.__modemap[self.__mode])
+        if self.name:
+            fp = open(self.name, self._modemap[self.mode])
         else:
-            fp = self.__fileobj
+            fp = self._fileobj
         if self.getmembers() != []:
-            endslash = self.getmembers()[0].endslash
+            endslash = self.getmembers()[0]._endslash
         else:
             endslash = 0
-        member = ArMember.from_filename(fp, filename, endslash=endslash)
-        if self.__fname:
+        member = ArMember.from_filename(fp, name, endslash=endslash)
+        if self.name:
             fp.close()
-        self.__members.append(member)
-        self.__members_dict[member.name] = member
+        self.members.append(member)
+        self.members_dict[member.name] = member
 
     # container emulation
 
@@ -225,18 +223,18 @@ class ArMember(object):
         - fname     file name"""
 
     def __init__(self):
-        self.__name = None      # member name (i.e. filename) in the archive
-        self.__endslash = 0     # member name had trailing slash
-        self.__mtime = None     # last modification time
-        self.__owner = None     # owner user
-        self.__group = None     # owner group
-        self.__fmode = None     # permissions
-        self.__size = None      # member size in bytes
-        self.__fname = None     # file name associated with this member
-        self.__fp = None        # file pointer 
-        self.__offset = None    # start-of-data offset
-        self.__end = None       # end-of-data offset
-        self.__mode = None      # file open mode
+        self.name = None      # member name (i.e. filename) in the archive
+        self._endslash = 0     # member name had trailing slash
+        self.mtime = None     # last modification time
+        self.owner = None     # owner user
+        self.group = None     # owner group
+        self.fmode = None     # permissions
+        self.size = None      # member size in bytes
+        self.fname = None     # file name associated with this member
+        self._fp = None        # file pointer 
+        self._offset = None    # start-of-data offset
+        self._end = None       # end-of-data offset
+        self.mode = None      # file open mode
 
     def from_filename(fp, filename, encoding=None, errors=None, mode='r+b', endslash=0):
         """ Create a ArMember from filename, to be able to include it in archive"""
@@ -244,21 +242,21 @@ class ArMember(object):
         st = os.stat(filename)
 
         fd = open(filename, 'rb')
-        f.__name = fd.name
-        f.__endslash = endslash
-        f.__mtime = int(st.st_mtime)
-        f.__owner = int(st.st_uid)
-        f.__group = int(st.st_gid)
-        f.__fmode = '%o' % st.st_mode
-        f.__size = st.st_size
-        f.__fname = fp.name
+        f.name = fd.name
+        f._endslash = endslash
+        f.mtime = int(st.st_mtime)
+        f.owner = int(st.st_uid)
+        f.group = int(st.st_gid)
+        f.fmode = '%o' % st.st_mode
+        f.size = st.st_size
+        f.fname = fp.name
         
         
         fp.seek(0, os.SEEK_END)
         fp.write(f.getheader())
-        f.__offset = fp.tell()
+        f._offset = fp.tell()
         fp.write(fd.read())
-        f.__end = fp.tell()
+        f._end = fp.tell()
         fp.write(f.getpadding())
         fd.close()
         return f
@@ -301,20 +299,20 @@ class ArMember(object):
 
         # XXX struct.unpack can be used as well here
         f = ArMember()
-        f.__name = buf[0:16].rstrip().split(b"/")[0]
-        f.__endslash = int(buf[0:16].rstrip().endswith(b"/"))
+        f.name = buf[0:16].rstrip().split(b"/")[0]
+        f._endslash = int(buf[0:16].rstrip().endswith(b"/"))
         if sys.version >= '3':
             f.__name = f.__name.decode(encoding, errors)
-        f.__mtime = int(buf[16:28])
-        f.__owner = int(buf[28:34])
-        f.__group = int(buf[34:40])
-        f.__fmode  = buf[40:48]  # XXX octal value
-        f.__size  = int(buf[48:58])
+        f.mtime = int(buf[16:28])
+        f.owner = int(buf[28:34])
+        f.group = int(buf[34:40])
+        f.fmode  = buf[40:48]  # XXX octal value
+        f.size  = int(buf[48:58])
 
-        f.__fname = fname
-        f.__offset = fp.tell() # start-of-data
-        f.__end = f.__offset + f.__size
-        f.__mode = mode
+        f.fname = fname
+        f._offset = fp.tell() # start-of-data
+        f._end = f._offset + f.size
+        f.mode = mode
 
         return f
 
@@ -324,13 +322,13 @@ class ArMember(object):
 
     # XXX this is not a sequence like file objects
     def _ensure_open(self):
-        if self.__fp is None:
-            self.__fp = open(self.__fname, self.__mode)
-            self.__fp.seek(self.__offset)
+        if self._fp is None:
+            self._fp = open(self.fname, self.mode)
+            self._fp.seek(self._offset)
 
     def getheader(self):
         name = self.name
-        if self.endslash:
+        if self._endslash:
             name += '/'
         if len(name) > 16:
             raise ValueError('Long file names are not supported')
@@ -344,28 +342,28 @@ class ArMember(object):
     def read(self, size=0):
         self._ensure_open()
 
-        cur = self.__fp.tell()
+        cur = self._fp.tell()
 
-        if size > 0 and size <= self.__end - cur: # there's room
-            return self.__fp.read(size)
+        if size > 0 and size <= self._end - cur: # there's room
+            return self._fp.read(size)
 
-        if cur >= self.__end or cur < self.__offset:
+        if cur >= self._end or cur < self._offset:
             return b''
 
-        return self.__fp.read(self.__end - cur)
+        return self._fp.read(self._end - cur)
 
     def readline(self, size=None):
         self._ensure_open()
 
         if size is not None: 
-            buf = self.__fp.readline(size)
-            if self.__fp.tell() > self.__end:
+            buf = self._fp.readline(size)
+            if self._fp.tell() > self._end:
                 return b''
 
             return buf
 
-        buf = self.__fp.readline()
-        if self.__fp.tell() > self.__end:
+        buf = self._fp.readline()
+        if self._fp.tell() > self._end:
             return b''
         else:
             return buf
@@ -386,36 +384,36 @@ class ArMember(object):
     def seek(self, offset, whence=0):
         self._ensure_open()
 
-        if self.__fp.tell() < self.__offset:
-            self.__fp.seek(self.__offset)
+        if self._fp.tell() < self._offset:
+            self._fp.seek(self._offset)
 
-        if whence < 2 and offset + self.__fp.tell() < self.__offset:
+        if whence < 2 and offset + self._fp.tell() < self._offset:
             raise IOError("Can't seek at %d" % offset)
         
         if whence == 1:
-            self.__fp.seek(offset, 1)
+            self._fp.seek(offset, 1)
         elif whence == 0:
-            self.__fp.seek(self.__offset + offset, 0)
+            self._fp.seek(self._offset + offset, 0)
         elif whence == 2:
-            self.__fp.seek(self.__end + offset, 0)
+            self._fp.seek(self._end + offset, 0)
 
     def tell(self):
         self._ensure_open()
 
-        cur = self.__fp.tell()
+        cur = self._fp.tell()
         
-        if cur < self.__offset:
+        if cur < self._offset:
             return 0
         else:
-            return cur - self.__offset
+            return cur - self._offset
 
     def seekable(self):
         return True
 
     def close(self):
-        if self.__fp is not None:
-            self.__fp.close()
-            self.__fp = None
+        if self._fp is not None:
+            self._fp.close()
+            self._fp = None
    
     def next(self):
         return self.readline()
@@ -427,15 +425,6 @@ class ArMember(object):
                 yield line
 
         return iter(nextline())
-
-    name = property(lambda self: self.__name)
-    mtime = property(lambda self: self.__mtime)
-    owner = property(lambda self: self.__owner)
-    group = property(lambda self: self.__group)
-    fmode = property(lambda self: self.__fmode)
-    size = property(lambda self: self.__size)
-    fname = property(lambda self: self.__fname)
-    endslash = property(lambda self: self.__endslash)
 
 if __name__ == '__main__':
     # test

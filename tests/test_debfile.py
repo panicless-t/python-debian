@@ -46,8 +46,8 @@ class TestArFileWriting(unittest.TestCase):
         if os.path.exists('test.ar'):
             os.unlink('test.ar')
 
-    def test_append_mode(self):
-        self.a.append('test_debfile.py')
+    def test_adding(self):
+        self.a.add('test_debfile.py')
 
         m = self.a.getmember('test_debfile.py')
         self.assertEqual(m.name, 'test_debfile.py')
@@ -59,7 +59,7 @@ class TestArFileWriting(unittest.TestCase):
     def test_write_mode(self):
         a = arfile.ArFile(self.a.name, mode='w')
         self.assertEqual(a.getmembers(), [])
-        a.append('test_debfile.py')
+        a.add('test_debfile.py')
         
         self.a2 = arfile.ArFile(self.a.name, mode='r')
         m2 = self.a2.getmember('test_debfile.py')
