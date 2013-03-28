@@ -142,7 +142,7 @@ class ArMember(object):
     # XXX this is not a sequence like file objects
     def _ensure_open(self):
         """used to ensure the file is open FIXME: this should probably go out"""
-        if self.arfile._fileobj is None or self._closed:
+        if self.arfile._fileobj is None:
             raise IOError('I/O operation on closed file')
 
     def _parse_name(self, name):
@@ -253,10 +253,7 @@ class ArMember(object):
         return True
 
     def close(self):
-        self._closed = True
-        if self.arfile._fileobj is not None:
-            self.arfile._fileobj.close()
-            self.arfile._fileobj = None
+        pass
 
     def next(self):
         return self.readline()
@@ -488,6 +485,9 @@ class ArFile(object):
         self._fileobj.write(armember.getpadding())
         self.members.append(armember)
         self.members_dict[armember.name] = armember
+
+    def close(self):
+        self._fileobj.close()
 
     def __iter__(self):
         """ Iterate over the members of the present ar archive. """

@@ -157,6 +157,9 @@ class TestArFile(unittest.TestCase):
             m.close()
         for m in self.a.getmembers():
             m.read()
+        self.a.close()
+        for m in self.a.getmembers():
+            self.assertRaises(ValueError, m.read)
 
     def test_extract(self):
         """ test extraction """
