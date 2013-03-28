@@ -55,7 +55,7 @@ class ArMember(object):
         - arfile    ArFile instance this member belongs to"""
 
     def __init__(self, name=''):
-        self.name = name      # member name (i.e. filename) in the archive
+        self._name = name     # member name (i.e. filename) in the archive
         self._endslash = 0    # member name had trailing slash
         self.mtime = 0        # last modification time
         self.owner = 0        # owner user
@@ -114,8 +114,6 @@ class ArMember(object):
                 arfile._parse_long_fn(obj.read())
                 return False
         obj._parse_name(buf[0:16])
-        if sys.version >= '3':
-            obj.name = obj.name.decode(encoding, errors)
         obj.mtime = int(buf[16:28])
         obj.owner = int(buf[28:34])
         obj.group = int(buf[34:40])
@@ -123,6 +121,56 @@ class ArMember(object):
 
         obj.mode  = mode
         return obj
+    
+    def _parse_name(self, name):
+        if self.arfile.format == None:
+            if name.startswith(b'/') or name.strip().endswith(b'/'):
+                self.arfile.format = GNU_FORMAT
+            else:
+                self.arfile.format = BSD_FORMAT
+        if name.startswith(b'#1/'):
+            # This is BSD style long name extension. In this file format,
+            # the long file names are stored as an appendix to file header
+            # (and prefix to file contents. The header of a long file name
+            # can be idenfied by starting `#1/', following by length of file
+            # name appendix. E.g. `#1/30' means the filename starts right
+            # after the header and runs for 30 bytes.
+            long_fn_length = int(name[3:].strip())
+            lfn = self.arfile._fileobj.read(long_fn_length)
+            self._offset += long_fn_length
+            self.size += -long_fn_length
+            self._seekpos = 0
+            name = lfn
+
+        self._name = name
+
+    def name():
+        def fget(self):
+            if self.arfile.format == GNU_FORMAT:
+                self._endslash = 1
+                if self._name.startswith(b'/'):
+                    # This is a long file name. In GNU long file name format, the
+                    # long filenames are stored in an special filename named `//',
+                    # and identified by the offset of that file. E.g. `/30' means
+                    # the filename starts at 30 bytes into file `//' and runs until
+                    # next newline.
+                    long_fn_index = int(self._name.decode(self.arfile.encoding).split('/', 1)[1].strip())
+                    clean_name = clean_fn(self.arfile._longfn_map[long_fn_index])
+                else:
+                    clean_name = clean_fn(self._name)
+            elif self.arfile.format == BSD_FORMAT:
+                self._endslash = 0
+                clean_name = clean_fn(self._name)
+            else:
+                raise NotImplementedError
+            if sys.version >= '3':
+                clean_name = clean_name.decode(encoding, errors)
+            return clean_name
+        def fset(self, value):
+            raise ValueError("NO!")
+            self._name = value
+        return (fget, fset)
+    name = property(*name())
 
     @classmethod
     def from_arfile(cls, fp, arfile, encoding=None, errors=None, mode='rb'):
@@ -140,53 +188,10 @@ class ArMember(object):
         if self.arfile._fileobj is None:
             raise IOError('I/O operation on closed file')
 
-    def _parse_name(self, name):
-        """Parse filenames and optionally look them up in long filename mapping.
-        """
-        if self.arfile.format == None:
-            if name.startswith(b'/') or name.strip().endswith(b'/'):
-                self.arfile.format = GNU_FORMAT
-            else:
-                self.arfile.format = BSD_FORMAT
-
-        if self.arfile.format == GNU_FORMAT:
-            self._endslash = 1
-            if name.startswith(b'/'):
-                # This is a long file name. In GNU long file name format, the
-                # long filenames are stored in an special filename named `//',
-                # and identified by the offset of that file. E.g. `/30' means
-                # the filename starts at 30 bytes into file `//' and runs until
-                # next newline.
-                long_fn_index = int(name.decode(self.arfile.encoding).split('/', 1)[1].strip())
-                clean_name = clean_fn(self.arfile._longfn_map[long_fn_index])
-            else:
-                clean_name = clean_fn(name)
-        elif self.arfile.format == BSD_FORMAT:
-            self._endslash = 0
-            if name.startswith(b'#1/'):
-                # This is BSD style long name extension. In this file format,
-                # the long file names are stored as an appendix to file header
-                # (and prefix to file contents. The header of a long file name
-                # can be idenfied by starting `#1/', following by length of file
-                # name appendix. E.g. `#1/30' means the filename starts right
-                # after the header and runs for 30 bytes.
-                long_fn_length = int(name[3:].strip())
-                lfn = self.arfile._fileobj.read(long_fn_length)
-                clean_name = clean_fn(lfn)
-                self._offset += long_fn_length
-                self.size += -long_fn_length
-                self._seekpos = 0
-            else:
-                clean_name = clean_fn(name)
-        else:
-            raise NotImplementedError
-        self.name = clean_name
-
     def getheader(self):
         """Returns the header bytes used to add member to archive."""
         name = self.name
-        
-        if self.arfile._endslash:
+        if self.arfile.format == GNU_FORMAT:
             name += '/'
         name = name.encode(self.arfile.encoding)
         if len(name) > 16:
@@ -338,6 +343,8 @@ class ArFile(object):
             self._truncate_archive()
         else:
             raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
+        if self.format is None:
+            self.format = DEFAULT_FORMAT
 
     def _index_archive(self):
         if self.name:
@@ -476,7 +483,7 @@ class ArFile(object):
         else:
             st = os.fstat(fileobj.fileno())
         
-        armember.name = name
+        armember._name = name
         armember._endslash = self._endslash
         armember.mtime = int(st.st_mtime)
         armember.owner = int(st.st_uid)

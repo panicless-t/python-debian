@@ -54,6 +54,13 @@ class TestGNULongArFileFormat(unittest.TestCase):
         f = open('test_debian_support.py', 'rb')
         self.assertEqual(m.read(), f.read())
         f.close()
+        self.a.close()
+
+        a = arfile.ArFile(self.a.name, mode='w')
+        a.add('test_debian_support.py')
+
+        a2 = arfile.ArFile(self.a.name, mode='r')
+        self.assertEqual(len(a2.getmembers()), 1)
 
 class TestBSDLongArFileFormat(TestGNULongArFileFormat):
     def setUp(self):
@@ -95,6 +102,13 @@ class TestArFileWriting(unittest.TestCase):
         
         a2 = arfile.ArFile(self.a.name, mode='r')
         m2 = a2.getmember('test_debfile.py')
+        
+        a3 = arfile.ArFile('test2.ar', mode='w')
+        a3.add('test_debfile.py')
+        a3.close()
+
+        a4 = arfile.ArFile('test2.ar', mode='r')
+        self.assertEqual(len(a4.getmembers()), 1)
 
 class TestBSDArFileWriting(TestArFileWriting):
     def setUp(self):
