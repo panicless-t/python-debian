@@ -34,7 +34,7 @@ sys.path.insert(0, '../lib/')
 from debian import arfile
 from debian import debfile
 
-class TestGNUArFileFormat(unittest.TestCase):
+class TestGNULongArFileFormat(unittest.TestCase):
     def setUp(self):
         os.system("ar r testlong.ar test_debian_support.py test_deb822.py test_changelog_full_stops >/dev/null 2>&1")
         assert os.path.exists("testlong.ar")
@@ -49,6 +49,21 @@ class TestGNUArFileFormat(unittest.TestCase):
 
         # test presence of a file with long filename
         self.assertEqual(self.a.getmember('test_debian_support.py').name, 'test_debian_support.py')
+        
+        m = self.a.getmember('test_debian_support.py')
+        f = open('test_debian_support.py', 'rb')
+        self.assertEqual(m.read(), f.read())
+        f.close()
+
+class TestBSDLongArFileFormat(TestGNULongArFileFormat):
+    def setUp(self):
+        os.system("bsdtar -c --format ar -f testlong.ar test_debian_support.py test_deb822.py test_changelog_full_stops >/dev/null 2>&1")
+        assert os.path.exists("testlong.ar")
+        self.a = arfile.ArFile("testlong.ar", mode='a')
+
+    def tearDown(self):
+        if os.path.exists('testlong.ar'):
+            os.unlink('testlong.ar')
 
 
 class TestArFileWriting(unittest.TestCase):
@@ -65,27 +80,37 @@ class TestArFileWriting(unittest.TestCase):
 
     def test_adding(self):
         self.a.add('test_debfile.py')
-
         m = self.a.getmember('test_debfile.py')
         self.assertEqual(m.name, 'test_debfile.py')
         self.assertEqual(self.a.getmembers()[-1], m)
-        
+
         self.a2 = arfile.ArFile('test.ar', mode='r')
         m2 = self.a2.getmember('test_debfile.py')
 
     def test_write_mode(self):
+        self.a.close()
         a = arfile.ArFile(self.a.name, mode='w')
         self.assertEqual(a.getmembers(), [])
         a.add('test_debfile.py')
         
-        self.a2 = arfile.ArFile(self.a.name, mode='r')
-        m2 = self.a2.getmember('test_debfile.py')
+        a2 = arfile.ArFile(self.a.name, mode='r')
+        m2 = a2.getmember('test_debfile.py')
 
+class TestBSDArFileWriting(TestArFileWriting):
+    def setUp(self):
+        os.system("bsdtar -c --format ar -f test.ar test_debfile.py test_changelog test_deb822.py >/dev/null 2>&1") 
+        assert os.path.exists("test.ar")
+        with os.popen("ar t test.ar") as ar:
+            self.testmembers = [x.strip() for x in ar.readlines()]
+        self.a = arfile.ArFile("test.ar", mode='a')
+
+    def tearDown(self):
+        if os.path.exists('test.ar'):
+            os.unlink('test.ar')
 
 class TestArFile(unittest.TestCase):
-
     def setUp(self):
-        os.system("ar r test.ar test_debfile.py test_changelog test_deb822.py >/dev/null 2>&1") 
+        os.system("ar r test.ar test_debfile.py test_changelog test_deb822.py >/dev/null 2>&1")
         assert os.path.exists("test.ar")
         with os.popen("ar t test.ar") as ar:
             self.testmembers = [x.strip() for x in ar.readlines()]
@@ -94,6 +119,8 @@ class TestArFile(unittest.TestCase):
     def tearDown(self):
         if os.path.exists('test.ar'):
             os.unlink('test.ar')
+        if os.path.exists('bsdtest.ar'):
+            os.unlink('bsdtest.ar')
     
     def test_getnames(self):
         """ test for file list equality """
@@ -181,6 +208,20 @@ class TestArFile(unittest.TestCase):
         f1.close()
         f2.close()
         os.unlink(tmpf)
+
+class TestBSDArFile(TestArFile):
+    """Run the same tests for BSD style archive file"""
+    def setUp(self):
+        os.system("bsdtar -c --format ar -f test.ar test_debfile.py test_changelog test_deb822.py >/dev/null 2>&1")
+        assert os.path.exists("test.ar")
+        with os.popen("ar t test.ar") as ar:
+            self.testmembers = [x.strip() for x in ar.readlines()]
+        self.a = arfile.ArFile("test.ar")
+
+    def tearDown(self):
+        if os.path.exists('test.ar'):
+            os.unlink('test.ar')
+
 
 class TestDebFile(unittest.TestCase):
 

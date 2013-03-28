@@ -54,10 +54,7 @@ class ArMember(object):
         - size      size in bytes
         - arfile    ArFile instance this member belongs to"""
 
-    def __init__(self, name='', format=None):
-        if format is None:
-            format = GNU_FORMAT
-        self.format = format  # file format (BSD/GNU)
+    def __init__(self, name=''):
         self.name = name      # member name (i.e. filename) in the archive
         self._endslash = 0    # member name had trailing slash
         self.mtime = 0        # last modification time
@@ -106,13 +103,11 @@ class ArMember(object):
 
         obj = cls()
         obj.arfile = arfile
-        obj._endslash = int(buf[0:16].rstrip().endswith(b"/"))
+        obj._endslash = int(buf[0:16].rstrip().endswith(b"/") or buf[0] == b'/')
         obj.size  = int(buf[48:58])
         obj._offset = offset # start-of-data
         obj._end  = obj._offset + obj.size
-
         if obj._endslash:
-            obj.format = GNU_FORMAT
             if buf[0:16].rstrip() == b'//':
                 # this is the long filename mapping data
                 obj.seek(0)
@@ -148,12 +143,39 @@ class ArMember(object):
     def _parse_name(self, name):
         """Parse filenames and optionally look them up in long filename mapping.
         """
-        if self.format == GNU_FORMAT:
+        if self.arfile.format == None:
+            if name.startswith(b'/') or name.strip().endswith(b'/'):
+                self.arfile.format = GNU_FORMAT
+            else:
+                self.arfile.format = BSD_FORMAT
+
+        if self.arfile.format == GNU_FORMAT:
             self._endslash = 1
             if name.startswith(b'/'):
-                # this is a long file name, index of the file name follows slash
+                # This is a long file name. In GNU long file name format, the
+                # long filenames are stored in an special filename named `//',
+                # and identified by the offset of that file. E.g. `/30' means
+                # the filename starts at 30 bytes into file `//' and runs until
+                # next newline.
                 long_fn_index = int(name.decode(self.arfile.encoding).split('/', 1)[1].strip())
                 clean_name = clean_fn(self.arfile._longfn_map[long_fn_index])
+            else:
+                clean_name = clean_fn(name)
+        elif self.arfile.format == BSD_FORMAT:
+            self._endslash = 0
+            if name.startswith(b'#1/'):
+                # This is BSD style long name extension. In this file format,
+                # the long file names are stored as an appendix to file header
+                # (and prefix to file contents. The header of a long file name
+                # can be idenfied by starting `#1/', following by length of file
+                # name appendix. E.g. `#1/30' means the filename starts right
+                # after the header and runs for 30 bytes.
+                long_fn_length = int(name[3:].strip())
+                lfn = self.arfile._fileobj.read(long_fn_length)
+                clean_name = clean_fn(lfn)
+                self._offset += long_fn_length
+                self.size += -long_fn_length
+                self._seekpos = 0
             else:
                 clean_name = clean_fn(name)
         else:
@@ -163,11 +185,13 @@ class ArMember(object):
     def getheader(self):
         """Returns the header bytes used to add member to archive."""
         name = self.name
-        if self._endslash:
+        
+        if self.arfile._endslash:
             name += '/'
         name = name.encode(self.arfile.encoding)
         if len(name) > 16:
-            raise ValueError('Long file names are not supported')
+            raise NotImplementedError('Long file names are not supported')
+        name = name + b' '*(16-len(name))
         rest = ('{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self)).encode(self.arfile.encoding)
         return name + rest
 
@@ -179,18 +203,16 @@ class ArMember(object):
 
     def read(self, size=0):
         self._ensure_open()
-
-        cur = self._seekpos
-        if size > 0 and size <= self._end - self._offset - cur: # there's room
-            self.arfile._fileobj.seek(self._offset + cur)
+        self.seek(self._seekpos)
+        if size > 0 and size <= self._end - self._offset - self._seekpos: # there's room
+            self.arfile._fileobj.seek(self._offset + self._seekpos)
             buf = self.arfile._fileobj.read(size)
             self._seekpos += len(buf)
             return buf
 
-        if self._offset + cur >= self._end or self._offset + cur < self._offset:
+        if self._offset + self._seekpos >= self._end or self._offset + self._seekpos < self._offset:
             return b''
-
-        buf = self.arfile._fileobj.read(self._end - self._offset - cur)
+        buf = self.arfile._fileobj.read(self._end - self._offset - self._seekpos)
         self._seekpos += len(buf)
         return buf
 
@@ -280,7 +302,7 @@ class ArFile(object):
     armember = ArMember
 
     def __init__(self, filename=None, mode='r', fileobj=None,
-                 encoding=None, errors=None, format=GNU_FORMAT):
+                 encoding=None, errors=None, format=None):
         """ Build an ar file representation starting from either a filename or
         an existing file object. The only supported mode is 'r'.
 
@@ -295,11 +317,8 @@ class ArFile(object):
         self.name = filename
 
         self._fileobj = fileobj
-        if format == GNU_FORMAT:
-            self._endslash = 1
-        else:
-            # FIXME
-            self._endslash = 0
+        self.format = format
+        self._endslash = None
         self._modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
         self._longfn_map = {}
 
@@ -478,6 +497,7 @@ class ArFile(object):
             raise IOError("File not open for writing")
         armember = copy.copy(armember)
         hdr = armember.getheader()
+        assert len(hdr) == 60, "Invalid header length"
         self._fileobj.write(hdr)
         if fileobj is None:
             fileobj = open(armember.name, 'rb')
