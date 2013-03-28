@@ -19,7 +19,12 @@ from __future__ import print_function
 
 import sys
 import os
+import copy
 from tarfile import copyfileobj
+
+BSD_FORMAT = 0
+GNU_FORMAT = 1
+DEFAULT_FORMAT = BSD_FORMAT
 
 GLOBAL_HEADER = b"!<arch>\n"
 GLOBAL_HEADER_LENGTH = len(GLOBAL_HEADER)
@@ -30,6 +35,8 @@ FILE_MAGIC = b"`\n"
 class ArError(Exception):
     pass
 
+def clean_fn(fn):
+    return fn.rstrip().split(b"/")[0]
 
 class ArMember(object):
     """ Member of an ar archive.
@@ -39,29 +46,34 @@ class ArMember(object):
     
     ArMember objects have the following (read-only) properties:
         - name      member name in an ar archive
+        - format    file format (BSD/GNU)
         - mtime     modification time
         - owner     owner user
         - group     owner group
         - fmode     file permissions
         - size      size in bytes
-        - fname     file name"""
+        - arfile    ArFile instance this member belongs to"""
 
-    def __init__(self, name=''):
+    def __init__(self, name='', format=None):
+        if format is None:
+            format = GNU_FORMAT
+        self.format = format  # file format (BSD/GNU)
         self.name = name      # member name (i.e. filename) in the archive
         self._endslash = 0    # member name had trailing slash
         self.mtime = 0        # last modification time
         self.owner = 0        # owner user
         self.group = 0        # owner group
-        self.fmode = 0644     # permissions
+        self.fmode = 0o644    # permissions
         self.size = 0         # member size in bytes
-        self.fname = None     # file name associated with this member
-        self._fp = None       # file pointer 
+        self.arfile = None    # file name associated with this member
         self._offset = 0      # start-of-data offset
         self._end = 0         # end-of-data offset
         self.mode = None      # file open mode
+        self._seekpos = 0     # seek position within archived file
+        self._closed = False  # if this file is closed
 
     @classmethod
-    def from_buf(cls, buf, fname, offset, encoding=None, errors=None, mode='rb'):
+    def from_buf(cls, buf, arfile, offset, encoding=None, errors=None, mode='rb'):
         """ Construct a ArInfo object from a 60-byte header"""
         if not buf:
             return None
@@ -92,115 +104,118 @@ class ArMember(object):
         #48     57     File size in bytes        Decimal
         #58     59     File magic                \140\012
 
-        # XXX struct.unpack can be used as well here
         obj = cls()
-        obj.name = buf[0:16].rstrip().split(b"/")[0]
+        obj.arfile = arfile
         obj._endslash = int(buf[0:16].rstrip().endswith(b"/"))
+        obj.size  = int(buf[48:58])
+        obj._offset = offset # start-of-data
+        obj._end  = obj._offset + obj.size
+
+        if obj._endslash:
+            obj.format = GNU_FORMAT
+            if buf[0:16].rstrip() == b'//':
+                # this is the long filename mapping data
+                obj.seek(0)
+                arfile._parse_long_fn(obj.read())
+                return False
+        obj._parse_name(buf[0:16])
         if sys.version >= '3':
             obj.name = obj.name.decode(encoding, errors)
         obj.mtime = int(buf[16:28])
         obj.owner = int(buf[28:34])
         obj.group = int(buf[34:40])
         obj.fmode = buf[40:48]  # XXX octal value
-        obj.size  = int(buf[48:58])
 
-        obj.fname = fname
-        obj._offset = offset # start-of-data
-        obj._end  = obj._offset + obj.size
         obj.mode  = mode
         return obj
 
     @classmethod
-    def from_filename(cls, fp, filename, encoding=None, errors=None, mode='r+b', endslash=0):
-        """ Create a ArMember from filename, to be able to include it in archive"""
-        f = cls()
-        st = os.stat(filename)
-
-        fd = open(filename, 'rb')
-        f.name = fd.name
-        f._endslash = endslash
-        f.mtime = int(st.st_mtime)
-        f.owner = int(st.st_uid)
-        f.group = int(st.st_gid)
-        f.fmode = '%o' % st.st_mode
-        f.size = st.st_size
-        f.fname = fp.name
-        
-        fp.seek(0, os.SEEK_END)
-        fp.write(f.getheader())
-        f._offset = fp.tell()
-        fp.write(fd.read())
-        f._end = fp.tell()
-        fp.write(f.getpadding())
-        fd.close()
-        return f
-
-    @classmethod
-    def from_arfile(cls, fp, fname, encoding=None, errors=None, mode='rb'):
+    def from_arfile(cls, fp, arfile, encoding=None, errors=None, mode='rb'):
         """fp is an open File object positioned on a valid file header inside
         an ar archive. Return a new ArMember on success, None otherwise. """
         # FIXME: Mode should probably not be in last position.
         buf = fp.read(FILE_HEADER_LENGTH)
-        return cls.from_buf(buf, fname, encoding=encoding, errors=errors, mode=mode, offset=fp.tell())
+        return cls.from_buf(buf, arfile, encoding=encoding, errors=errors, mode=mode, offset=fp.tell())
 
     # file interface
 
     # XXX this is not a sequence like file objects
     def _ensure_open(self):
-        if self._fp is None:
-            self._fp = open(self.fname, self.mode)
-            self._fp.seek(self._offset)
+        """used to ensure the file is open FIXME: this should probably go out"""
+        if self.arfile._fileobj is None or self._closed:
+            raise IOError('I/O operation on closed file')
+
+    def _parse_name(self, name):
+        """Parse filenames and optionally look them up in long filename mapping.
+        """
+        if self.format == GNU_FORMAT:
+            self._endslash = 1
+            if name.startswith(b'/'):
+                # this is a long file name, index of the file name follows slash
+                long_fn_index = int(name.decode(self.arfile.encoding).split('/', 1)[1].strip())
+                clean_name = clean_fn(self.arfile._longfn_map[long_fn_index])
+            else:
+                clean_name = clean_fn(name)
+        else:
+            raise NotImplementedError
+        self.name = clean_name
 
     def getheader(self):
+        """Returns the header bytes used to add member to archive."""
         name = self.name
         if self._endslash:
             name += '/'
+        name = name.encode(self.arfile.encoding)
         if len(name) > 16:
             raise ValueError('Long file names are not supported')
-        return '{1: <16}{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self, name)
+        rest = ('{0.mtime: <9}  {0.owner: <5} {0.group: <5} {0.fmode: <7} {0.size: <10}`\n'.format(self)).encode(self.arfile.encoding)
+        return name + rest
 
     def getpadding(self):
+        """Returns the padding byte if needed."""
         if self.size % 2 == 1:
-            return '\n'
-        return ''
+            return b'\n'
+        return b''
 
     def read(self, size=0):
         self._ensure_open()
 
-        cur = self._fp.tell()
+        cur = self._seekpos
+        if size > 0 and size <= self._end - self._offset - cur: # there's room
+            self.arfile._fileobj.seek(self._offset + cur)
+            buf = self.arfile._fileobj.read(size)
+            self._seekpos += len(buf)
+            return buf
 
-        if size > 0 and size <= self._end - cur: # there's room
-            return self._fp.read(size)
-
-        if cur >= self._end or cur < self._offset:
+        if self._offset + cur >= self._end or self._offset + cur < self._offset:
             return b''
 
-        return self._fp.read(self._end - cur)
+        buf = self.arfile._fileobj.read(self._end - self._offset - cur)
+        self._seekpos += len(buf)
+        return buf
 
     def readline(self, size=None):
         self._ensure_open()
 
-        if size is not None: 
-            buf = self._fp.readline(size)
-            if self._fp.tell() > self._end:
-                return b''
-
-            return buf
-
-        buf = self._fp.readline()
-        if self._fp.tell() > self._end:
+        self.seek(self._seekpos)
+        if size is not None:
+            buf = self.arfile._fileobj.readline(size)
+        else:
+            buf = self.arfile._fileobj.readline()
+        self._seekpos += len(buf)
+        if self._offset + self._seekpos > self._end:
             return b''
         else:
             return buf
 
     def readlines(self, sizehint=0):
         self._ensure_open()
-        
+
         buf = None
         lines = []
-        while True: 
+        while True:
             buf = self.readline()
-            if not buf: 
+            if not buf:
                 break
             lines.append(buf)
 
@@ -208,25 +223,27 @@ class ArMember(object):
 
     def seek(self, offset, whence=0):
         self._ensure_open()
+        if self.arfile._fileobj.tell() < self._offset:
+            self.arfile._fileobj.seek(self._offset)
 
-        if self._fp.tell() < self._offset:
-            self._fp.seek(self._offset)
-
-        if whence < 2 and offset + self._fp.tell() < self._offset:
+        if whence < 2 and offset + self.arfile._fileobj.tell() < self._offset:
             raise IOError("Can't seek at %d" % offset)
-        
+
         if whence == 1:
-            self._fp.seek(offset, 1)
+            self.arfile._fileobj.seek(offset, 1)
         elif whence == 0:
-            self._fp.seek(self._offset + offset, 0)
+            self.arfile._fileobj.seek(self._offset + offset, 0)
         elif whence == 2:
-            self._fp.seek(self._end + offset, 0)
+            self.arfile._fileobj.seek(self._end + offset, 0)
+        self._seekpos = self.arfile._fileobj.tell() - self._offset
 
     def tell(self):
-        self._ensure_open()
+        return self._seekpos
 
-        cur = self._fp.tell()
-        
+    def _tell(self):
+        self._ensure_open()
+        cur = self.arfile._fileobj.tell()
+
         if cur < self._offset:
             return 0
         else:
@@ -236,13 +253,14 @@ class ArMember(object):
         return True
 
     def close(self):
-        if self._fp is not None:
-            self._fp.close()
-            self._fp = None
-   
+        self._closed = True
+        if self.arfile._fileobj is not None:
+            self.arfile._fileobj.close()
+            self.arfile._fileobj = None
+
     def next(self):
         return self.readline()
-    
+
     def __iter__(self):
         def nextline():
             line = self.readline()
@@ -265,7 +283,7 @@ class ArFile(object):
     armember = ArMember
 
     def __init__(self, filename=None, mode='r', fileobj=None,
-                 encoding=None, errors=None):
+                 encoding=None, errors=None, format=GNU_FORMAT):
         """ Build an ar file representation starting from either a filename or
         an existing file object. The only supported mode is 'r'.
 
@@ -278,7 +296,16 @@ class ArFile(object):
         self.members = [] 
         self.members_dict = {}
         self.name = filename
+
         self._fileobj = fileobj
+        if format == GNU_FORMAT:
+            self._endslash = 1
+        else:
+            # FIXME
+            self._endslash = 0
+        self._modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
+        self._longfn_map = {}
+
         if encoding is None:
             encoding = sys.getfilesystemencoding()
         self.encoding = encoding
@@ -288,18 +315,17 @@ class ArFile(object):
             else:
                 errors = 'strict'
         self.errors = errors
-        self._modemap = {'r': 'rb', 'a': 'r+b', 'w': 'r+b'}
         self.mode = mode
-        if self.mode not in 'raw':
-            raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
         if self.mode in 'ra':
             self._index_archive()
         elif self.mode == 'w':
             self._truncate_archive()
+        else:
+            raise ValueError("Invalid open mode; must be 'r', 'a' or 'w'.")
 
     def _index_archive(self):
         if self.name:
-            fp = open(self.name, self._modemap[self.mode])
+            fp = self._fileobj = open(self.name, self._modemap[self.mode])
         elif self._fileobj:
             fp = self._fileobj
         else:
@@ -308,35 +334,49 @@ class ArFile(object):
             raise ArError("Unable to find global header")
 
         while True:
-            newmember = ArMember.from_arfile(fp, self.name,
+            newmember = self.armember.from_arfile(fp, self,
                                            encoding=self.encoding,
                                            errors=self.errors,
                                            mode=self.mode)
-            if not newmember:
+            if newmember is None:
                 break
+            if newmember is False:
+                continue
+            if self._endslash is None:
+                self._endslash = newmember._endslash
             self.members.append(newmember)
             if self.members[0]._endslash != newmember._endslash:
                 raise ValueError("BSD/GNU filename field format mixup.")
             self.members_dict[newmember.name] = newmember
             if newmember.size % 2 == 0: # even, no padding
-                fp.seek(newmember.size, 1) # skip to next header
+                fp.seek(newmember._end, 0) # skip to next header
             else:
-                fp.seek(newmember.size + 1 , 1) # skip to next header
-        
-        if self.name:
-            fp.close()
+                fp.seek(newmember._end + 1 , 0) # skip to next header
 
     def _truncate_archive(self):
         if self.name:
-            fp = open(self.name, 'wb')
+            fp = self._fileobj = open(self.name, 'wb')
         elif self._fileobj:
             fp = self._fileobj
         else:
             raise IOError("Invalid parameters passed, need to specify either filename or fileobj")
         fp.write(GLOBAL_HEADER)
         fp.flush()
-        if self.name:
-            fp.close()
+
+    def _ensure_open(self):
+        if not self._fileobj:
+            self._fileobj = open(self.name, self._modemap[self.mode])
+
+    def _parse_long_fn(self, data):
+        """Parses long filename mapping
+        """
+        pos = 0
+        nextlf = data.find(b'\n', pos)
+        while nextlf > -1:
+            fn = data[pos:nextlf+1]
+            self._longfn_map[pos] = fn
+            pos = nextlf + 1
+            nextlf = data.find(b'\n', pos)
 
     def getmember(self, name):
         """ Return the (last occurrence of a) member in the archive whose name
@@ -394,33 +434,60 @@ class ArFile(object):
         # efficient than getmember's - probably historical), and I'm having a
         # hard time seeing the use-case for the latter.
         for m in self.members:
-            if isinstance(member, ArMember) and m.name == member.name:
+            if isinstance(member, self.armember) and m.name == member.name:
                 return m
             elif member == m.name:
                 return m
         return None
 
-    def getarinfo(self):
-        pass # FIXME
+    def getarmember(self, name=None, fileobj=None):
+        """Create a ArInfo object for either the file `name' or the file
+           object`fileobj' (osing os.fstat on its file descriptor). You can
+           modify some of the TarInfo's attributes before you add it using
+           addfile().
+        """
+
+        # When fileobj is given, replace name by
+        # fileobj's real name.
+        if fileobj is not None:
+            name = fileobj.name
+        
+        armember = self.armember()
+        armember.arfile = self
+        
+        if fileobj is None:
+            st = os.stat(name)
+        else:
+            st = os.fstat(fileobj.fileno())
+        
+        armember.name = name
+        armember._endslash = self._endslash
+        armember.mtime = int(st.st_mtime)
+        armember.owner = int(st.st_uid)
+        armember.group = int(st.st_gid)
+        armember.fmode = '%o' % st.st_mode
+        armember.size = st.st_size
+        return armember
 
     def add(self, name):
+        member = self.getarmember(name)
+        self._addfile(member)
+
+    def addfile(self, armember, fileobj=None):
+        return self._addfile(armember, fileobj=fileobj)
+
+    def _addfile(self, armember, fileobj=None):
         if self.mode == 'r':
             raise IOError("File not open for writing")
-        if self.name:
-            fp = open(self.name, self._modemap[self.mode])
-        else:
-            fp = self._fileobj
-        if self.getmembers() != []:
-            endslash = self.getmembers()[0]._endslash
-        else:
-            endslash = 0
-        member = ArMember.from_filename(fp, name, endslash=endslash)
-        if self.name:
-            fp.close()
-        self.members.append(member)
-        self.members_dict[member.name] = member
-
-    # container emulation
+        armember = copy.copy(armember)
+        hdr = armember.getheader()
+        self._fileobj.write(hdr)
+        if fileobj is None:
+            fileobj = open(armember.name, 'rb')
+        copyfileobj(fileobj, self._fileobj, armember.size)
+        self._fileobj.write(armember.getpadding())
+        self.members.append(armember)
+        self.members_dict[armember.name] = armember
 
     def __iter__(self):
         """ Iterate over the members of the present ar archive. """

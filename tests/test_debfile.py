@@ -34,6 +34,23 @@ sys.path.insert(0, '../lib/')
 from debian import arfile
 from debian import debfile
 
+class TestGNUArFileFormat(unittest.TestCase):
+    def setUp(self):
+        os.system("ar r testlong.ar test_debian_support.py test_deb822.py test_changelog_full_stops >/dev/null 2>&1")
+        assert os.path.exists("testlong.ar")
+        self.a = arfile.ArFile("testlong.ar", mode='a')
+
+    def tearDown(self):
+        if os.path.exists('testlong.ar'):
+            os.unlink('testlong.ar')
+
+    def test_long_filenames(self):
+        self.assertEqual(len(self.a.getmembers()), 3)
+
+        # test presence of a file with long filename
+        self.assertEqual(self.a.getmember('test_debian_support.py').name, 'test_debian_support.py')
+
+
 class TestArFileWriting(unittest.TestCase):
     def setUp(self):
         os.system("ar r test.ar test_changelog test_deb822.py >/dev/null 2>&1") 
@@ -119,7 +136,7 @@ class TestArFile(unittest.TestCase):
         
             for i in [10, 100, 10000]:
                 self.assertEqual(m.read(i), f.read(i))
-       
+        
             m.close()
             f.close()
 
@@ -145,13 +162,21 @@ class TestArFile(unittest.TestCase):
         """ test extraction """
         tmpf = tempfile.NamedTemporaryFile()
         self.a.extract('test_debfile.py', tmpf.name)
-        self.assertEqual(open(tmpf.name, 'rb').read(), open(__file__, 'rb').read())
+        f1 = open(tmpf.name, 'rb')
+        f2 = open(__file__, 'rb')
+        self.assertEqual(f1.read(), f2.read())
+        f1.close()
+        f2.close()
         tmpf.close()
 
         tmpd = tempfile.mkdtemp()
         self.a.extract('test_debfile.py', tmpd)
         tmpf = os.path.join(tmpd, 'test_debfile.py')
-        self.assertEqual(open(tmpf, 'rb').read(), open(__file__, 'rb').read())
+        f1 = open(tmpf, 'rb')
+        f2 = open(__file__, 'rb')
+        self.assertEqual(f1.read(), f2.read())
+        f1.close()
+        f2.close()
         os.unlink(tmpf)
 
 class TestDebFile(unittest.TestCase):
